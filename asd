@@ -42,9 +42,6 @@ namespace Oxide.Plugins
         private float altitudeAdjustment = 0f;
         private float altitudeAdjustmentSpeed = 0f;
         private float altitudeAdjustmentTarget = 0f;
-        private float groundHeight = 0f;
-        private float targetAltitude = 0f;
-        private Vector3 targetPosition = Vector3.zero;
         #endregion
 
         protected override void LoadDefaultConfig()
@@ -186,7 +183,7 @@ private void FlyCommand(BasePlayer player, string command, string[] args)
 }
 
 
-private void FlyHelicopterTo(BasePlayer player, BaseEntity miniCopterEntity, Vector3 targetPositionAltitude, Action onComplete)
+private void FlyHelicopterTo(BaseEntity miniCopterEntity, Vector3 targetPosition, float targetAltitude, BasePlayer player, float gainAltitude = 10f)
 {
     if (miniCopterEntity == null)
     {
@@ -194,90 +191,79 @@ private void FlyHelicopterTo(BasePlayer player, BaseEntity miniCopterEntity, Vec
         return;
     }
 
-    Rigidbody helicopterRigidbody = miniCopterEntity.GetComponent<Rigidbody>();
+    var helicopterRigidbody = miniCopterEntity.GetComponent<Rigidbody>();
     if (helicopterRigidbody == null)
     {
         Puts("MiniCopter does not have a Rigidbody!");
         return;
     }
 
-    //Define variables
-    float maxSpeed = 100f;
-    float maxPitchAngle = 30f;
-    float maxRollAngle = 30f;
-    float maxYawAngle = 30f;
-    float maxAltitudeAdjustment = 10f;
-    float minAltitudeAdjustment = -10f;
-    float smoothTime = 0.5f;
+    const float rotationSpeed = 5f;
+    int numberOfRepetitions = Mathf.CeilToInt(Vector3.Distance(miniCopterEntity.transform.position, targetPosition) / (flightSpeed * 0.1f));
 
-    Timer flyTimer = null;
-    flyTimer = timer.Repeat(0.1f, 0, () =>
+    // Gain altitude and rotate the helicopter towards the target position
+    GainAltitude(helicopterRigidbody, 10f);
+    RotateHelicopterTowards(miniCopterEntity, targetPosition);
+
+    // Add a short delay before flying towards the target
+    timer.Once(2.0f, () =>
     {
-        var currentPosition = miniCopterEntity.transform.position;
-        RaycastHit hit;
-
-        // Cast a ray from the helicopter's current position towards the target position to check for any obstacles
-        Vector3 raycastDirection = (targetPosition - currentPosition).normalized;
-        if (Physics.Raycast(currentPosition, raycastDirection, out hit, 100f, LayerMask.GetMask("Terrain", "World", "Construction")))
+        Timer flyTimer = null;
+        flyTimer = timer.Repeat(0.1f, numberOfRepetitions, () =>
         {
-            float obstacleHeight = hit.point.y;
-            if (obstacleHeight + flightHeight > targetAltitude)
+            var currentPosition = miniCopterEntity.transform.position;
+            RaycastHit hit;
+
+            // Cast a ray from the helicopter's current position towards the target position to check for any obstacles
+            Vector3 raycastDirection = (targetPosition - currentPosition).normalized;
+            if (Physics.Raycast(currentPosition, raycastDirection, out hit, 100f, LayerMask.GetMask("Terrain", "World", "Construction")))
             {
-                targetAltitude = obstacleHeight + flightHeight;
+                float obstacleHeight = hit.point.y;
+                if (obstacleHeight + flightHeight > targetAltitude)
+                {
+                    targetAltitude = obstacleHeight + flightHeight;
+                }
             }
-        }
 
-        var targetPositionWithAltitude = new Vector3(targetPosition.x, targetAltitude, targetPosition.z);
+            var targetPositionWithAltitude = new Vector3(targetPosition.x, targetAltitude, targetPosition.z);
 
-        var distanceToTarget = Vector3.Distance(currentPosition, targetPositionWithAltitude);
-        if (distanceToTarget > 0.1f)
-        {
-            var direction = (targetPositionWithAltitude - currentPosition).normalized;
-            var speed = Mathf.Min(flightSpeed, distanceToTarget);
-
-            var targetVelocity = direction * speed;
-            targetVelocity.y = helicopterRigidbody.velocity.y;
-
-            // Adjust the altitude to maintain the target altitude
-            var currentAltitude = miniCopterEntity.transform.position.y;
-            if (currentAltitude < targetAltitude)
+            var distanceToTarget = Vector3.Distance(currentPosition, targetPositionWithAltitude);
+            if (distanceToTarget > 0.1f)
             {
-                var forceDirection = Vector3.up;
-                var forceMagnitude = Mathf.Min(2f, targetAltitude - currentAltitude) * 2f;
-                helicopterRigidbody.AddForce(forceDirection * forceMagnitude, ForceMode.Acceleration);
+                var direction = (targetPositionWithAltitude - currentPosition).normalized;
+                var speed = Mathf.Min(flightSpeed, distanceToTarget);
 
-                // Update the altitude adjustment parameters for a smooth transition
-                altitudeAdjustmentTarget = targetAltitude - groundHeight;
-                altitudeAdjustmentSpeed = Mathf.Min(2f, targetAltitude - currentAltitude) * 2f;
+                var targetVelocity = direction * speed;
+                targetVelocity.y = helicopterRigidbody.velocity.y;
+
+                helicopterRigidbody.velocity = targetVelocity;
+
+                // Adjust the altitude to maintain the target altitude
+                var currentAltitude = miniCopterEntity.transform.position.y;
+                if (currentAltitude < targetAltitude)
+                {
+                    var forceDirection = Vector3.up;
+                    var forceMagnitude = Mathf.Min(2f, targetAltitude - currentAltitude) * 2f;
+                    helicopterRigidbody.AddForce(forceDirection * forceMagnitude, ForceMode.Acceleration);
+                }
+                else if (currentAltitude > targetAltitude)
+                {
+                    var forceDirection = Vector3.down;
+                    var forceMagnitude = Mathf.Min(20f, currentAltitude - targetAltitude) * 10f;
+                    helicopterRigidbody.AddForce(forceDirection * forceMagnitude, ForceMode.Acceleration);
+                }
+                else if (currentAltitude - currentPosition.y < 1.0f)
+                {
+                    helicopterRigidbody.AddForce(Vector3.up * 20f, ForceMode.Acceleration);
+                }
             }
-            else if (currentAltitude > targetAltitude)
+            else
             {
-                var forceDirection = Vector3.down;
-                var forceMagnitude = Mathf.Min(20f, currentAltitude - targetAltitude) * 10f;
-                helicopterRigidbody.AddForce(forceDirection * forceMagnitude, ForceMode.Acceleration);
-
-                // Update the altitude adjustment parameters for a smooth transition
-                altitudeAdjustmentTarget = targetAltitude - groundHeight;
-                altitudeAdjustmentSpeed = Mathf.Min(20f, currentAltitude - targetAltitude) * 10f;
+                timer.Destroy(ref flyTimer);
+                SendReply(player, "Landing sequence initiated");
+                LandHelicopter(miniCopterEntity, player);
             }
-            else if (currentAltitude - groundHeight < 1.0f)
-            {
-                helicopterRigidbody.AddForce(Vector3.up * 20f, ForceMode.Acceleration);
-            }
-
-            // Adjust the pitch and roll of the helicopter
-            pitchAngle = Mathf.Lerp(pitchAngle, Mathf.Clamp(-Mathf.Atan2(direction.y, direction.z) * Mathf.Rad2Deg, -10f, 10f), Time.deltaTime * 2f);
-            rollAngle = Mathf.Lerp(rollAngle, Mathf.Clamp(Mathf.Atan2(direction.x, direction.z) * Mathf.Rad2Deg, -10f, 10f), Time.deltaTime * 2f);
-            yawAngle = Mathf.Lerp(yawAngle, Mathf.Clamp(-Mathf.Atan2(direction.x, direction.y) * Mathf.Rad2Deg, -10f, 10f), Time.deltaTime * 2f);
-            miniCopterEntity.transform.localRotation = Quaternion.Euler(pitchAngle, yawAngle, rollAngle);
-            
-            }
-          else
-        {
-            timer.Destroy(ref flyTimer);
-            SendReply(player, "Landing sequence initiated");
-            LandHelicopter(miniCopterEntity, player);
-        }
+        });
     });
 }
 
